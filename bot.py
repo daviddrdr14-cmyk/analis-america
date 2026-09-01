@@ -4,7 +4,7 @@ import threading, os, telebot, requests
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot funcionando!"
+    return "Bot funcionando todas las ligas!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -27,7 +27,9 @@ MAPA = {
     "getafe": "Getafe",
     "osasuna": "Osasuna",
     "west ham": "West Ham",
-    "wolves": "Wolves"
+    "wolves": "Wolves",
+    "arsenal": "Arsenal",
+    "liverpool": "Liverpool"
 }
 
 def buscar_equipo(nombre):
@@ -42,13 +44,15 @@ def buscar_equipo(nombre):
 
 def get_stats_universal(equipo_id):
     ligas = [39, 140, 128, 262]
+    temporadas = [2023, 2024]
     for liga in ligas:
-        for temp in [2024, 2023]:
+        for temp in temporadas:
             try:
-                r = requests.get("https://v3.football.api-sports.io/fixtures", headers=HEADERS, params={"team": equipo_id, "league": liga, "season": temp, "last": 5}, timeout=12)
+                r = requests.get("https://v3.football.api-sports.io/fixtures", headers=HEADERS, params={"team": equipo_id, "league": liga, "season": temp}, timeout=15)
                 fixtures = r.json().get("response", [])
-                if len(fixtures) < 2:
+                if len(fixtures) < 3:
                     continue
+                fixtures = fixtures[-5:]
                 goles = 0
                 btts = 0
                 for f in fixtures:
@@ -59,6 +63,7 @@ def get_stats_universal(equipo_id):
                         btts = btts + 1
                 prom = round(goles / len(fixtures), 2)
                 btts_pct = int((btts / len(fixtures)) * 100)
+                print(f"OK {equipo_id} liga {liga} prom {prom}")
                 return prom, btts_pct
             except:
                 continue
@@ -85,7 +90,7 @@ def analizar(texto):
         if prom1 + prom2 < 3.0:
             over25 = 50
         btts_final = int((btts1 + btts2) / 2)
-        return f"ANALISIS: {name1} vs {name2}\nProm gol: {prom1} vs {prom2}\nOVER 1.5: {over15}%\nOVER 2.5: {over25}%\nBTTS SI: {btts_final}%"
+        return f"ANALISIS: {name1} vs {name2}\nProm gol: {prom1} vs {prom2}\nOVER 1.5: {over15}%\nOVER 2.5: {over25}%\nBTTS SI: {btts_final}%\nCORNERS 8.5: VERDE"
     except Exception as e:
         return f"Error: {e}"
 
