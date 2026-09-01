@@ -3,7 +3,7 @@ import threading, os, telebot, requests
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot con corners reales!"
+def home(): return "Bot corners corregido!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -24,18 +24,19 @@ def buscar_equipo(nombre):
         return t["id"], t["name"]
     return None, None
 
-def get_stats_con_corners(equipo_id):
-    ligas = [39, 140, 128, 262]
+def get_stats_corregido(equipo_id):
+    ligas = [39, 140] # 39=Premier, 140=LaLiga
     for liga in ligas:
-        for temp in [2023, 2024]:
+        for temp in [2024, 2023]:
             try:
                 r = requests.get("https://v3.football.api-sports.io/fixtures", headers=HEADERS, params={"team": equipo_id, "league": liga, "season": temp}, timeout=15)
                 fixtures = r.json().get("response", [])
-                if len(fixtures) < 3: continue
-                fixtures = fixtures[-10:]
+                if len(fixtures) < 5: continue
+                fixtures_10 = fixtures[-10:]
+                fixtures_5_corners = fixtures[-5:] # 5 para corners mas exacto
 
                 goles=0; o15=0; o25=0; btts=0
-                for f in fixtures:
+                for f in fixtures_10:
                     gh = f["goals"]["home"] or 0
                     ga = f["goals"]["away"] or 0
                     total=gh+ga
@@ -44,37 +45,52 @@ def get_stats_con_corners(equipo_id):
                     if total>2.5: o25+=1
                     if gh>0 and ga>0: btts+=1
 
-                # CORNERS REALES - 3 ultimos partidos
-                total_corners=0
-                corners_count=0
-                corners_partidos=0
-                for f in fixtures[-3:]:
+                # CORNERS CORREGIDO - TOTAL DEL PARTIDO
+                lista_totales = []
+                lista_equipo = []
+                for f in fixtures_5_corners:
                     fid = f["fixture"]["id"]
                     try:
                         rs = requests.get("https://v3.football.api-sports.io/fixtures/statistics", headers=HEADERS, params={"fixture": fid}, timeout=10)
-                        for team_stat in rs.json().get("response", []):
-                            if team_stat["team"]["id"] == equipo_id:
-                                for s in team_stat["statistics"]:
-                                    if s["type"] == "Corner Kicks" and s["value"]:
-                                        total_corners += s["value"]
-                                        corners_count+=1
-                                        corners_partidos+=1
+                        data = rs.json().get("response", [])
+                        if not data or len(data) < 2:
+                            continue
+                        # data[0] = local, data[1] = visitante
+                        c_local = 0
+                        c_visit = 0
+                        for team_stat in data:
+                            for s in team_stat["statistics"]:
+                                if s["type"] == "Corner Kicks":
+                                    val = s["value"] or 0
+                                    if team_stat["team"]["id"] == equipo_id:
+                                        c_equipo = val
+                                        lista_equipo.append(c_equipo)
+                                    if team_stat["team"]["id"] == data[0]["team"]["id"]:
+                                        c_local = val
+                                    else:
+                                        c_visit = val
+                        total_partido = (c_local or 0) + (c_visit or 0)
+                        if total_partido > 0:
+                            lista_totales.append(total_partido)
                     except:
                         continue
 
-                n=len(fixtures)
-                prom_corners = round(total_corners/corners_count,1) if corners_count>0 else 0
+                n=len(fixtures_10)
+                avg_equipo = round(sum(lista_equipo)/len(lista_equipo),1) if lista_equipo else 0
+                avg_total = round(sum(lista_totales)/len(lista_totales),1) if lista_totales else 0
+
+                print(f"Equipo {equipo_id} corners equipo {lista_equipo} totales {lista_totales}")
 
                 return {
                     "prom": round(goles/n,2),
-                    "o15": int(o15/n*100),
-                    "o25": int(o25/n*100),
-                    "btts": int(btts/n*100),
-                    "corners_avg": prom_corners,
-                    "corners_count": corners_count,
-                    "fixtures_total": n
+                    "o15": int(o15/n*100), "o25": int(o25/n*100), "btts": int(btts/n*100),
+                    "corners_equipo": avg_equipo,
+                    "corners_total": avg_total,
+                    "muestras": len(lista_totales),
+                    "detalle_totales": lista_totales
                 }
-            except:
+            except Exception as e:
+                print(e)
                 continue
     return None
 
@@ -86,32 +102,38 @@ def analizar(texto):
         id2, name2 = buscar_equipo(e2)
         if not id1 or not id2: return "No encontre equipo"
 
-        s1 = get_stats_con_corners(id1)
-        s2 = get_stats_con_corners(id2)
+        s1 = get_stats_corregido(id1)
+        s2 = get_stats_corregido(id2)
         if not s1 or not s2: return "Sin datos"
 
         o15 = int((s1["o15"]+s2["o15"])/2)
         o25 = int((s1["o25"]+s2["o25"])/2)
         btts = int((s1["btts"]+s2["btts"])/2)
 
-        corners_partido = round(s1["corners_avg"] + s2["corners_avg"],1)
-        over85 = "OVER 8.5" if corners_partido > 8.5 else "UNDER 8.5"
-        over95 = "OVER 9.5" if corners_partido > 9.5 else "UNDER 9.5"
+        # Promedio de corners del partido = promedio de los totales
+        if s1["corners_total"] and s2["corners_total"]:
+            total_estimado = round((s1["corners_total"] + s2["corners_total"])/2,1)
+            detalle = f"{s1['detalle_totales']} vs {s2['detalle_totales']}"
+        else:
+            total_estimado = 0
+            detalle = "API no devolvio corners en esos 5 partidos"
 
-        corners_txt = f"{corners_partido} corners"
-        if s1["corners_avg"]==0 and s2["corners_avg"]==0:
-            corners_txt = "No disponible (API no dio corners en ultimos 3)"
+        if total_estimado == 0:
+            corners_msg = f"N/D - No hay datos de corners en plan gratis para esos fixtures ({s1['muestras']} muestras)"
+        else:
+            over85 = "OVER 8.5 ✅" if total_estimado > 8.5 else "UNDER 8.5"
+            over95 = "OVER 9.5 ✅" if total_estimado > 9.5 else "UNDER 9.5"
+            corners_msg = (f"Prom total por partido: {total_estimado}\n"
+                           f"{name1}: {s1['corners_equipo']} propios (total partido {s1['corners_total']} en {s1['muestras']} juegos)\n"
+                           f"{name2}: {s2['corners_equipo']} propios (total partido {s2['corners_total']})\n"
+                           f"Historial: {detalle}\n"
+                           f"8.5: {over85} | 9.5: {over95}")
 
         return (f"ANALISIS REAL: {name1} vs {name2}\n"
-                f"Prom gol ult 10: {s1['prom']} vs {s2['prom']}\n"
-                f"OVER 1.5: {o15}% | {s1['o15']}% - {s2['o15']}%\n"
-                f"OVER 2.5: {o25}% | {s1['o25']}% - {s2['o25']}%\n"
-                f"BTTS SI: {btts}% | {s1['btts']}% - {s2['btts']}%\n\n"
-                f"CORNERS REAL (ult 3):\n"
-                f"{name1}: {s1['corners_avg']} avg\n"
-                f"{name2}: {s2['corners_avg']} avg\n"
-                f"TOTAL PARTIDO: {corners_txt}\n"
-                f"8.5: {over85} | 9.5: {over95}")
+                f"Prom gol: {s1['prom']} vs {s2['prom']}\n"
+                f"OVER 1.5: {o15}% | OVER 2.5: {o25}%\n"
+                f"BTTS: {btts}%\n\n"
+                f"CORNERS REAL:\n{corners_msg}")
 
     except Exception as e:
         return f"Error: {e}"
